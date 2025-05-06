@@ -1,0 +1,48 @@
+# Check-TCP-Connections.ps1
+# Monitors all TCP connections to specified ports on this server, regardless of which local IP/interface is used.
+# Loops every 10 seconds and displays detailed connection info, including process name.
+#
+# How it works:
+# - Scans all TCP connections on the server.
+# - Filters for connections where the local port matches any of your target ports (e.g., 7077, 9099, 8088).
+# - Shows connections on any local IP address (not just localhost), so you see connections from remote clients as well as local ones.
+# - Displays local/remote addresses and ports, connection state, process ID, and process name.
+# - Refreshes every 10 seconds, clearing the screen for readability.
+
+# List of target ports to monitor
+$ports = @(7077, 9099, 8088)
+
+while ($true) {
+    # Clear the screen for easy reading
+    Clear-Host
+    
+    # Display what the script is doing, with timestamp
+    Write-Host "Checking TCP connections to ports: $($ports -join ', ') on ALL local IP addresses and interfaces (including server hostname/IP and localhost) at $(Get-Date)" -ForegroundColor Cyan
+    Write-Host "(This includes connections from remote clients and local processes)" -ForegroundColor Yellow
+
+    # Get all TCP connections to the specified ports, regardless of local address/interface
+    $connections = Get-NetTCPConnection | Where-Object {
+        $ports -contains $_.LocalPort
+    }
+
+    if ($connections) {
+        $connections | ForEach-Object {
+            # Try to get the process name for each connection
+            $procName = try { (Get-Process -Id $_.OwningProcess).ProcessName } catch { "N/A" }
+            [PSCustomObject]@{
+                LocalAddress  = $_.LocalAddress
+                LocalPort     = $_.LocalPort
+                RemoteAddress = $_.RemoteAddress
+                RemotePort    = $_.RemotePort
+                State         = $_.State
+                OwningProcess = $_.OwningProcess
+                ProcessName   = $procName
+            }
+        } | Format-Table -AutoSize
+    } else {
+        Write-Host "No connections found to the specified ports at this time." -ForegroundColor Yellow
+    }
+
+    # Wait 10 seconds before checking again
+    Start-Sleep -Seconds 10
+}
