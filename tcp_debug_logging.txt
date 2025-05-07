@@ -1,0 +1,117 @@
+# TCP Connection Monitoring Script
+# This script monitors specified TCP ports and logs detailed connection information
+# including process details, user information, and connection statistics
+
+param(
+    # Optional parameter for log file directory
+    [string]$LogDir = (Split-Path -Parent $MyInvocation.MyCommand.Path)
+)
+
+# List of target ports to monitor
+$ports = @(7077, 9099, 8088)
+
+# Create log file with timestamp
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$logFile = Join-Path $LogDir "tcp_connections_$timestamp.log"
+
+function Write-LogAndConsole {
+    param($Message, $ForegroundColor = "White")
+    
+    Write-Host $Message -ForegroundColor $ForegroundColor
+    Add-Content -Path $logFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'): $Message"
+}
+
+Write-LogAndConsole "Starting TCP connection monitoring. Log file: $logFile" -ForegroundColor Cyan
+Write-LogAndConsole "----------------------------------------" -ForegroundColor Cyan
+
+while ($true) {
+    Clear-Host
+
+    $currentTime = Get-Date
+    Write-LogAndConsole "Checking TCP connections to ports: $($ports -join ', ') on ALL local IP addresses and interfaces at $currentTime" -ForegroundColor Cyan
+    Write-LogAndConsole "(This includes connections from remote clients and local processes)" -ForegroundColor Yellow
+
+    # Get all TCP connections to the specified ports
+    $connections = Get-NetTCPConnection | Where-Object {
+        $ports -contains $_.LocalPort
+    }
+
+    if ($connections) {
+        # Group by LocalPort and count connections
+        $grouped = $connections | Group-Object LocalPort | Sort-Object Name
+        Write-LogAndConsole "`nConnection counts per port:" -ForegroundColor Green
+        foreach ($g in $grouped) {
+            Write-LogAndConsole ("Port {0}: {1} connections" -f $g.Name, $g.Count) -ForegroundColor White
+        }
+
+        Write-LogAndConsole "`nConnection details:" -ForegroundColor Green
+
+        $connections | ForEach-Object {
+            # Get process details
+            $process = try { Get-Process -Id $_.OwningProcess -ErrorAction Stop } catch { $null }
+            $procName = if ($process) { $process.ProcessName } else { "N/A" }
+            
+            # Get process owner and session info
+            $procDetails = try {
+                $proc = Get-WmiObject Win32_Process -Filter "ProcessId = $($_.OwningProcess)"
+                $owner = $null
+                $domain = $null
+                $proc.GetOwner([ref]$owner, [ref]$domain)
+                @{
+                    Owner = $owner
+                    Domain = $domain
+                    SessionId = $proc.SessionId
+                    CreationDate = $proc.CreationDate
+                }
+            } catch { @{ Owner = "N/A"; Domain = "N/A"; SessionId = "N/A"; CreationDate = "N/A" } }
+
+            # Calculate connection duration if creation time is available
+            $connectionAge = if ($_.CreationTime) {
+                $duration = $currentTime - $_.CreationTime
+                "{0:dd}d {0:hh}h {0:mm}m {0:ss}s" -f $duration
+            } else {
+                "Unknown"
+            }
+
+            # Create detailed connection object
+            $connectionInfo = [PSCustomObject]@{
+                Timestamp     = $currentTime
+                LocalAddress  = $_.LocalAddress
+                LocalPort     = $_.LocalPort
+                RemoteAddress = $_.RemoteAddress
+                RemotePort    = $_.RemotePort
+                State        = $_.State
+                ConnectionAge = $connectionAge
+                OwningProcess = $_.OwningProcess
+                ProcessName  = $procName
+                ProcessOwner = "$($procDetails.Domain)\$($procDetails.Owner)"
+                SessionId    = $procDetails.SessionId
+                ProcessStart = $procDetails.CreationDate
+                IdleTime     = if ($_.State -eq 'Established') { 
+                    try { (Get-NetTCPConnection -OwningProcess $_.OwningProcess -State Established -ErrorAction Stop).IdleTime } catch { "N/A" }
+                } else { "N/A" }
+            }
+
+            # Format and output connection details
+            $outputString = @"
+Connection Details:
+    Local: $($connectionInfo.LocalAddress):$($connectionInfo.LocalPort)
+    Remote: $($connectionInfo.RemoteAddress):$($connectionInfo.RemotePort)
+    State: $($connectionInfo.State)
+    Connection Age: $($connectionInfo.ConnectionAge)
+    Idle Time: $($connectionInfo.IdleTime)
+    Process: $($connectionInfo.ProcessName) (PID: $($connectionInfo.OwningProcess))
+    Process Owner: $($connectionInfo.ProcessOwner)
+    Session ID: $($connectionInfo.SessionId)
+    Process Start: $($connectionInfo.ProcessStart)
+"@
+            Write-LogAndConsole $outputString
+            Write-LogAndConsole "----------------------------------------"
+        }
+    } else {
+        Write-LogAndConsole "No connections found to the specified ports at this time." -ForegroundColor Yellow
+    }
+
+    Write-LogAndConsole "----------------------------------------`n"
+    Start-Sleep -Seconds 30
+}
