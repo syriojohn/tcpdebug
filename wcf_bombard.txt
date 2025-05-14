@@ -1,0 +1,142 @@
+using System;
+using System.Collections.Generic;
+using System.ServiceModel;
+using System.Threading.Tasks;
+
+namespace WcfConnectionTester
+{
+    // Replace with your actual WCF service contract
+    [ServiceContract]
+    public interface IMyService
+    {
+        [OperationContract]
+        string Ping(); // Replace with your method
+    }
+
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            string endpoint = "net.tcp://UAT_SERVER_IP_OR_HOSTNAME:7077/ServiceName"; // Adjust as needed
+            int clientCount = 1000;
+
+            Console.WriteLine("Select mode:");
+            Console.WriteLine("1) Single connection test");
+            Console.WriteLine("2) 1000 connections (open, call, close each)");
+            Console.WriteLine("3) 1000 connections (open, call, keep open)");
+            Console.Write("Enter 1, 2, or 3: ");
+            var choice = Console.ReadLine();
+
+            switch (choice)
+            {
+                case "1":
+                    SingleConnectionTest(endpoint);
+                    break;
+                case "2":
+                    MultipleConnectionsWithClose(endpoint, clientCount);
+                    break;
+                case "3":
+                    MultipleConnectionsKeepOpen(endpoint, clientCount);
+                    break;
+                default:
+                    Console.WriteLine("Invalid choice.");
+                    break;
+            }
+        }
+
+        static void SingleConnectionTest(string endpoint)
+        {
+            try
+            {
+                var binding = new NetTcpBinding();
+                var factory = new ChannelFactory<IMyService>(binding, new EndpointAddress(endpoint));
+                var client = factory.CreateChannel();
+                string result = client.Ping(); // Replace with your method
+                Console.WriteLine($"SUCCESS: Connected and received: {result}");
+                ((IClientChannel)client).Close();
+                factory.Close();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: {ex.Message}");
+            }
+        }
+
+        static void MultipleConnectionsWithClose(string endpoint, int count)
+        {
+            var binding = new NetTcpBinding();
+            var tasks = new List<Task>();
+            for (int i = 0; i < count; i++)
+            {
+                int clientId = i;
+                tasks.Add(Task.Run(() =>
+                {
+                    ChannelFactory<IMyService> factory = null;
+                    IMyService client = null;
+                    try
+                    {
+                        factory = new ChannelFactory<IMyService>(binding, new EndpointAddress(endpoint));
+                        client = factory.CreateChannel();
+                        string result = client.Ping();
+                        Console.WriteLine($"[{clientId}] Success: {result}");
+                        ((IClientChannel)client).Close();
+                        factory.Close();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[{clientId}] Error: {ex.Message}");
+                        if (client != null)
+                            ((IClientChannel)client).Abort();
+                        if (factory != null)
+                            factory.Abort();
+                    }
+                }));
+            }
+            Task.WaitAll(tasks.ToArray());
+            Console.WriteLine("All connections (with close) complete.");
+        }
+
+        static void MultipleConnectionsKeepOpen(string endpoint, int count)
+        {
+            var binding = new NetTcpBinding();
+            var factories = new List<ChannelFactory<IMyService>>();
+            var clients = new List<IMyService>();
+
+            for (int i = 0; i < count; i++)
+            {
+                try
+                {
+                    var factory = new ChannelFactory<IMyService>(binding, new EndpointAddress(endpoint));
+                    var client = factory.CreateChannel();
+                    string result = client.Ping();
+                    Console.WriteLine($"[{i}] Success: {result}");
+                    factories.Add(factory);
+                    clients.Add(client);
+                    // Do NOT close here; keep open
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[{i}] Error: {ex.Message}");
+                }
+            }
+
+            Console.WriteLine("All connections (kept open) established. Press Enter to close all.");
+            Console.ReadLine();
+
+            // Cleanup: close all connections
+            for (int i = 0; i < clients.Count; i++)
+            {
+                try
+                {
+                    ((IClientChannel)clients[i]).Close();
+                    factories[i].Close();
+                }
+                catch
+                {
+                    ((IClientChannel)clients[i]).Abort();
+                    factories[i].Abort();
+                }
+            }
+        }
+    }
+}
